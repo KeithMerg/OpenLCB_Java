@@ -10,6 +10,10 @@ public class MockVersionedValueListener<T> extends VersionedValueListener<T> {
         super(parent);
     }
 
+    public MockVersionedValueListener(VersionedValue<T> parent, boolean everyChange) {
+        super(parent, everyChange);
+    }
+
     public class UpdaterStub {
         public void update(T t) {}
     }

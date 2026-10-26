@@ -14,6 +14,38 @@ public class VersionedValue<T> {
     private int defaultVersion = DEFAULT_VERSION;
     private final static Logger log = Logger.getLogger(VersionedValue.class.getCanonicalName());
 
+    /**
+     * Notification of one change of the value, sent to the property change listeners. Besides
+     * the old and new value it carries the version the change was made at, and the listener
+     * that made it.
+     */
+    public static final class Change extends java.beans.PropertyChangeEvent {
+        private final int version;
+        private final transient Object origin;
+
+        Change(VersionedValue<?> source, Object oldValue, Object newValue, int version,
+               Object origin) {
+            super(source, "updated", oldValue, newValue);
+            this.version = version;
+            this.origin = origin;
+        }
+
+        /**
+         * @return the version this change was made at.
+         */
+        public int getVersion() {
+            return version;
+        }
+
+        /**
+         * @return the VersionedValueListener that made this change, or null if it was not made
+         * through a listener.
+         */
+        public Object getOrigin() {
+            return origin;
+        }
+    }
+
     public VersionedValue(T t) {
         version = DEFAULT_VERSION;
         nextVersion = DEFAULT_VERSION + 1;
@@ -49,14 +81,18 @@ public class VersionedValue<T> {
 
     /**
      * Sets the current value; possibly calling listeners. Handles versioning internally.
+     * <p>
+     * The new version is taken and the value stored as one step, so a set made at the same time
+     * on another thread cannot take a later version, be stored first, and cause this set to be
+     * refused as out of date.
      * @param t new value of data stored.
      */
     public void set(T t) {
-        int version;
-        synchronized(this) {
-            version = getNewVersion();
+        Change change;
+        synchronized (this) {
+            change = store(getNewVersion(), t, false, null);
         }
-        set(version, t);
+        fire(change);
     }
 
     /**
@@ -84,26 +120,50 @@ public class VersionedValue<T> {
     }
 
     private boolean setInternal(int atVersion, T t, boolean forceNotify) {
-        T old;
-        boolean updated = false;
+        Change change;
         synchronized (this) {
             if (atVersion <= version) return false;
-            int oldVersion = version;
-            version = atVersion;
-            if (nextVersion <= atVersion) {
-                nextVersion = atVersion + 1;
-            }
-            if (data.equals(t) && oldVersion != defaultVersion && !forceNotify) {
-                return true;
-            }
-            old = data;
-            if (oldVersion == defaultVersion || forceNotify) {
-                old = null;
-            }
-            data = t;
+            change = store(atVersion, t, forceNotify, null);
         }
-        firePropertyChange("updated", old, t);
+        fire(change);
         return true;
+    }
+
+    /**
+     * Stores a value at a version newer than the current one. The caller must hold the lock of
+     * this object, and must pass the result to {@link #fire} once it has released the lock.
+     * @param atVersion    new version number, greater than the current version
+     * @param t            new value of data stored
+     * @param forceNotify  notify the listeners even if the value has not changed
+     * @param origin       listener making the change, or null
+     * @return the notification to send, or null if there is none
+     */
+    Change store(int atVersion, T t, boolean forceNotify, Object origin) {
+        int oldVersion = version;
+        version = atVersion;
+        if (nextVersion <= atVersion) {
+            nextVersion = atVersion + 1;
+        }
+        if (data.equals(t) && oldVersion != defaultVersion && !forceNotify) {
+            return null;
+        }
+        T old = data;
+        if (oldVersion == defaultVersion || forceNotify) {
+            old = null;
+        }
+        data = t;
+        return new Change(this, old, t, atVersion, origin);
+    }
+
+    /**
+     * Sends a notification returned by {@link #store} to the listeners. Must be called without
+     * holding the lock of this object.
+     * @param change notification to send, or null for none
+     */
+    void fire(Change change) {
+        if (change != null) {
+            pcs.firePropertyChange(change);
+        }
     }
 
     /**

@@ -64,7 +64,11 @@ public class BitProducerConsumer extends MessageDecoder {
         this.eventOff = eventOff;
         this.flags = flags;
         value = new VersionedValue<>((flags & DEFAULT_TRUE) != 0);
-        valueListener = new VersionedValueListener<Boolean>(value) {
+        // Reports every change made by an owner, even one that a value from the network (which
+        // this listener sets) has overtaken before the report was made. The report is then
+        // sent after that network message, and when it comes back to us it sets the value to
+        // match the order of the messages on the bus.
+        valueListener = new VersionedValueListener<Boolean>(value, true) {
             @Override
             public void update(Boolean newValue) {
                 if ((flags & IS_PRODUCER) == 0) return;

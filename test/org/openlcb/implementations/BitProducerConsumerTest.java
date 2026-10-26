@@ -8,7 +8,12 @@ import org.junit.Test;
 
 import org.openlcb.EventID;
 import org.openlcb.NodeID;
+import org.openlcb.OlcbInterface;
+import org.mockito.InOrder;
 
+import java.util.concurrent.CountDownLatch;
+
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -618,6 +623,100 @@ public class BitProducerConsumerTest extends org.openlcb.InterfaceTestBase {
         sendFrameAndExpectResult( //
                 ":X198F4444N0504030201000708;",
                 ":X194C5333N0504030201000708;");
+    }
+
+    /**
+     * Holds back the delivery of outgoing messages, both to the bus and to the local
+     * listeners, until release() is called. This lets a test act while messages are still in
+     * the send queue.
+     */
+    private static class HeldLoopback implements OlcbInterface.SyncExecutor {
+        private final CountDownLatch released = new CountDownLatch(1);
+
+        @Override
+        public void schedule(Runnable r) throws InterruptedException {
+            released.await();
+            r.run();
+        }
+
+        void release() {
+            released.countDown();
+        }
+    }
+
+    /**
+     * The owner turns the bit on, and while that report is still in the send queue a report
+     * from another node turning it off is heard. Our report goes on the bus after the other
+     * node's, so every node watching the bus ends with the bit on, and so must we.
+     */
+    @Test
+    public void testFollowsBusOrderWhenRemoteReportHeardBeforeOursIsSent() throws Exception {
+        createWithDefaults();
+        MockVersionedValueListener<Boolean> owner = new MockVersionedValueListener<>(pc
+                .getValue());
+        HeldLoopback loopback = new HeldLoopback();
+        iface.setLoopbackThread(loopback);
+
+        owner.setFromOwner(true);
+        sendFrame(":X195B4444N0504030201000709;");
+        Assert.assertFalse(pc.getValue().getLatestData());
+
+        loopback.release();
+        expectFrame(":X195B4333N0504030201000708;");
+        expectNoFrames();
+
+        Assert.assertTrue(pc.getValue().getLatestData());
+        InOrder order = inOrder(owner.stub);
+        order.verify(owner.stub).update(false);
+        order.verify(owner.stub).update(true);
+        verifyNoMoreInteractions(owner.stub);
+    }
+
+    /**
+     * The owner turns the bit on and straight back off while the first report is still in the
+     * send queue. Both reports are sent, and as each comes back it sets the value it carried,
+     * so the bit follows the order of the messages on the bus and ends off.
+     */
+    @Test
+    public void testOwnReportsSetValueInBusOrder() throws Exception {
+        createWithDefaults();
+        MockVersionedValueListener<Boolean> owner = new MockVersionedValueListener<>(pc
+                .getValue());
+        HeldLoopback loopback = new HeldLoopback();
+        iface.setLoopbackThread(loopback);
+
+        owner.setFromOwner(true);
+        owner.setFromOwner(false);
+        loopback.release();
+        expectFrame(":X195B4333N0504030201000708;");
+        expectFrame(":X195B4333N0504030201000709;");
+        expectNoFrames();
+
+        Assert.assertFalse(pc.getValue().getLatestData());
+        InOrder order = inOrder(owner.stub);
+        order.verify(owner.stub).update(true);
+        order.verify(owner.stub).update(false);
+        verifyNoMoreInteractions(owner.stub);
+    }
+
+    @Test
+    public void testOtherLocalObjectSeesEventReports() throws Exception {
+        createWithDefaults();
+        BitProducerConsumer other = new BitProducerConsumer(iface, onEvent, offEvent,
+                BitProducerConsumer.IS_CONSUMER);
+        expectFrame(":X194C7333N0504030201000708;");
+        expectFrame(":X194C7333N0504030201000709;");
+        expectNoFrames();
+
+        // Messages from one object still reach the other objects on the same interface.
+        pc.getValue().set(true);
+        expectFrame(":X195B4333N0504030201000708;");
+        Assert.assertTrue(other.getValue().getLatestData());
+
+        pc.getValue().set(false);
+        expectFrame(":X195B4333N0504030201000709;");
+        Assert.assertFalse(other.getValue().getLatestData());
+        other.release();
     }
 
     private void createWithDefaults() {

@@ -11,9 +11,34 @@ import java.beans.PropertyChangeListener;
 public abstract class VersionedValueListener<T> implements PropertyChangeListener {
     int ownerVersion;
     protected VersionedValue<T> parent;
+    private final boolean everyChange;
 
+    /**
+     * Creates a listener that is told the latest value whenever someone else has set a value
+     * newer than any this listener has set or been told of.
+     * @param parent value to listen to
+     */
     public VersionedValueListener(VersionedValue<T> parent) {
+        this(parent, false);
+    }
+
+    /**
+     * Creates a listener.
+     * @param parent       value to listen to
+     * @param everyChange  if false, as for {@link #VersionedValueListener(VersionedValue)},
+     *                     update() is called with the latest value whenever someone else has set
+     *                     a value newer than any this listener has set or been told of, so a
+     *                     change already overtaken by a newer one is not reported. If true,
+     *                     update() is called for every change made by someone else, with the
+     *                     value of that change, even if this listener has set a newer value
+     *                     since. This suits a listener that sends the owners' changes out to the
+     *                     network and also sets the values it receives from the network: a value
+     *                     received from the network must not stop an owner's earlier change from
+     *                     being sent.
+     */
+    public VersionedValueListener(VersionedValue<T> parent, boolean everyChange) {
         this.parent = parent;
+        this.everyChange = everyChange;
         parent.addPropertyChangeListener(this);
         ownerVersion = parent.getVersion();
     }
@@ -24,18 +49,26 @@ public abstract class VersionedValueListener<T> implements PropertyChangeListene
     }
 
     @Override
+    @SuppressWarnings("unchecked")
     public void propertyChange(PropertyChangeEvent propertyChangeEvent) {
-        int pVersion = parent.getVersion();
-        boolean isUpdated = false;
+        if (everyChange && propertyChangeEvent instanceof VersionedValue.Change) {
+            VersionedValue.Change change = (VersionedValue.Change) propertyChangeEvent;
+            if (change.getOrigin() != this) {
+                update((T) change.getNewValue());
+            }
+            return;
+        }
+        T data;
         synchronized (this) {
-            if (pVersion > ownerVersion) {
-                ownerVersion = pVersion;
-                isUpdated = true;
+            synchronized (parent) {
+                if (parent.version <= ownerVersion) {
+                    return;
+                }
+                ownerVersion = parent.version;
+                data = parent.data;
             }
         }
-        if (isUpdated) {
-            update(parent.getLatestData());
-        }
+        update(data);
     }
 
     /**
@@ -44,12 +77,7 @@ public abstract class VersionedValueListener<T> implements PropertyChangeListene
      * @param t new value
      */
     public void setFromOwner(T t) {
-        int newVersion;
-        synchronized (this) {
-            newVersion = parent.getNewVersion();
-            ownerVersion = newVersion;
-        }
-        parent.set(newVersion, t);
+        setFromOwner(t, false);
     }
 
     /**
@@ -58,12 +86,25 @@ public abstract class VersionedValueListener<T> implements PropertyChangeListene
      * @param t new value
      */
     public void setFromOwnerWithForceNotify(T t) {
-        int newVersion;
+        setFromOwner(t, true);
+    }
+
+    /**
+     * Takes a new version and stores the value at it as one step, so that a set made at the same
+     * time on another thread cannot take a later version, be stored first, and cause this set
+     * to be refused as out of date.
+     * @param t            new value
+     * @param forceNotify  notify the other listeners even if the value has not changed
+     */
+    private void setFromOwner(T t, boolean forceNotify) {
+        VersionedValue.Change change;
         synchronized (this) {
-            newVersion = parent.getNewVersion();
-            ownerVersion = newVersion;
+            synchronized (parent) {
+                ownerVersion = parent.getNewVersion();
+                change = parent.store(ownerVersion, t, forceNotify, this);
+            }
         }
-        parent.setWithForceNotify(newVersion, t);
+        parent.fire(change);
     }
 
     /** Calls the updater with the latest data. */
