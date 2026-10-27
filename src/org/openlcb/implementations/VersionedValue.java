@@ -3,6 +3,28 @@ package org.openlcb.implementations;
 import java.util.logging.Logger;
 
 /**
+ * A value with a version number, shared between owners, which change it, and listeners, which
+ * are told of changes. Owners usually act through a {@link VersionedValueListener}.
+ * <p>
+ * <b>Threading.</b> Any thread may call any method. A set takes the lock of this object, takes
+ * a new version or checks the one it was given, stores the value, and releases the lock before
+ * the listeners are told. So:
+ * <ul>
+ * <li>values are stored in the order their versions are taken, and a set that takes its own
+ * version ({@link #set(Object)}, {@link VersionedValueListener#setFromOwner}) is never refused,
+ * whatever other threads do at the same time;</li>
+ * <li>a set at a version requested earlier ({@link #set(int, Object)}) is refused if a newer
+ * version has been stored since;</li>
+ * <li>listeners are told without the lock held, so when sets are made on different threads at
+ * the same time their notifications can arrive in a different order from their versions. Each
+ * notification is a {@link Change} and carries its version. A {@link VersionedValueListener}
+ * in its default mode reads the current value when it is notified and ignores anything older
+ * than what it has already seen, so that order does not affect it; in its everyChange mode it is
+ * told of each change in the order the notifications arrive;</li>
+ * <li>listeners may call back into this object, including setting the value;</li>
+ * <li>{@link #getLatestData()} and {@link #getVersion()} read without the lock.</li>
+ * </ul>
+ * <p>
  * Created by bracz on 12/30/15.
  */
 public class VersionedValue<T> {
@@ -20,6 +42,7 @@ public class VersionedValue<T> {
      * that made it.
      */
     public static final class Change extends java.beans.PropertyChangeEvent {
+        private static final long serialVersionUID = 1L;
         private final int version;
         private final transient Object origin;
 

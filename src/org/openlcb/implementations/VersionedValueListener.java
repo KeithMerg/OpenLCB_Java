@@ -6,6 +6,20 @@ import java.beans.PropertyChangeEvent;
 import java.beans.PropertyChangeListener;
 
 /**
+ * Connects one owner to a {@link VersionedValue}. The owner calls {@link #setFromOwner} to change
+ * the value, and {@link #update} is called when someone else changes it.
+ * <p>
+ * <b>Threading.</b> Any thread may call {@link #setFromOwner}; it takes a new version and stores
+ * the value as one step under the value's lock, so it is never refused. {@link #update} is called
+ * on the thread that made the change, with no lock of this class or of the value held, so it may
+ * itself call {@link #setFromOwner}. In the default mode, {@link #update} is called with the
+ * current value whenever the value's version is newer than any this listener has set or been
+ * told of, so a change that a newer one has overtaken is not reported. In the everyChange mode
+ * ({@link #VersionedValueListener(VersionedValue, boolean)}), {@link #update} is called for every
+ * change made by someone other than this listener, with that change's value, in the order the
+ * notifications arrive, which can differ from the version order when the changes were made on
+ * different threads at the same time (see {@link VersionedValue}).
+ * <p>
  * Created by bracz on 12/30/15.
  */
 public abstract class VersionedValueListener<T> implements PropertyChangeListener {

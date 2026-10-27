@@ -334,4 +334,54 @@ public class VersionedValueTest  {
         verifyNoMoreInteractions(l1.stub, l2.stub);
     }
 
+    /**
+     * Two owners on different threads set the value at the same time. Owner A stores first but
+     * is held before its notification goes out, so owner B's notification arrives first.
+     * Notifications are sent outside the lock, so this order is allowed. A default listener
+     * reads the current value when notified, so it is told of B's value once and nothing
+     * stale. An everyChange listener is told of each change in the order the notifications
+     * arrive, which here is the reverse of the version order.
+     */
+    @Test
+    public void testNotificationsMayArriveOutOfVersionOrder() throws Exception {
+        VersionedValue<Boolean> value = new VersionedValue<>(false);
+        value.set(false); // leaves the default version
+        java.util.concurrent.CountDownLatch aStored = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch bNotified = new java.util.concurrent.CountDownLatch(1);
+        // Registered first, so it runs before the listeners under test and can hold A's
+        // notification back.
+        value.addPropertyChangeListener(e -> {
+            if (Thread.currentThread().getName().equals("owner A")) {
+                aStored.countDown();
+                try {
+                    bNotified.await();
+                } catch (InterruptedException ex) {
+                    throw new RuntimeException(ex);
+                }
+            }
+        });
+        MockVersionedValueListener<Boolean> every = new MockVersionedValueListener<>(value, true);
+        MockVersionedValueListener<Boolean> latest = new MockVersionedValueListener<>(value);
+        MockVersionedValueListener<Boolean> ownerA = new MockVersionedValueListener<>(value);
+        MockVersionedValueListener<Boolean> ownerB = new MockVersionedValueListener<>(value);
+
+        Thread a = new Thread(() -> ownerA.setFromOwner(true), "owner A");
+        a.start();
+        aStored.await();
+        // A has stored true and released the lock; B now stores false, at a later version.
+        ownerB.setFromOwner(false);
+        bNotified.countDown();
+        a.join();
+
+        Assert.assertFalse("later version wins", value.getLatestData());
+        // The everyChange listener saw B's change, then A's.
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(every.stub);
+        order.verify(every.stub).update(false);
+        order.verify(every.stub).update(true);
+        verifyNoMoreInteractions(every.stub);
+        // The default listener saw the current value when B notified, and skipped A's stale one.
+        verify(latest.stub).update(false);
+        verifyNoMoreInteractions(latest.stub);
+    }
+
 }
